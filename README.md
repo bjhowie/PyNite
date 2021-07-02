@@ -46,7 +46,7 @@ PyNite depends on the following packages:
 * PrettyTable : used to format tabular output
 
 ## Optional Dependencies
-* VTK: used for visualization - Note that VTK is a little picky about which version of Python you are running. You must run a 64 bit installation of Python, rather than a 32 bit version. VTK does not need to be installed if you don't plan to use the visualization tools built into PyNite.
+* VTK: used for visualization - Note that VTK is a little picky about which version of Python you are running. You must run a 64 bit installation of Python, rather than a 32 bit version. Kitware lags getting their VTK Python builds out. They often don't support the latest version of Python. Right now VTK does not yet have a build for Python 3.9, but they have a build for Python 3.8. VTK does not need to be installed if you don't plan to use the visualization tools built into PyNite.
 * PDFKit: Used for generating pdf reports. In order to generate pdf reports, PDFKit requires you to have wkhtmltopdf installed on your computer. This is a free program available for download at https://wkhtmltopdf.org/downloads.html. Once installed, you'll need to help PyNite find it. On Windows, this can be done by setting your PATH environment variable to include the path to "wkhtmltopdf.exe" after installation. For example, mine is installed at "C:\Program Files\wkhtmltopdf\bin"
 * jinja2: Used for templating reports into HTML prior to HTML-to-pdf conversion.
 * jupyterlab: Only needed if you want to view the derivations used to build PyNite.
@@ -59,6 +59,18 @@ Here's a list of projects that run on PyNite:
 * Standard Solver (https://www.standardsolver.com/)
 
 # What's New?
+Version 0.0.36
+* Correction to sign convention to rectangular plate loads. They were being applied in the opposite direction than was specified by the user. Quadrilaterals were not affected.
+* Changed sign convention on rectangular plate to match the sign convention for quadrilaterals. These two elements are derived using different bending sign conventions and it seemed to be appropriate to make them behave the same way for the end user.
+
+Version 0.0.35
+* Issues with rectangular plate elements have been fixed. Membrane stiffness terms were being placed in the wrong location in the element's global stifness matrix. This bug was identical to the one that had been occuring in quadrilateral elements prior to v0.0.28.
+* Bug fix for `dz` countours for rectangular plate elements. The individual plate corner displacements were being mapped to the wrong corners. Only the `dz` contours were affected by this issue.
+
+Version 0.0.34
+* Bug fix for contour smoothing on rectangular plates. The plate results were correct, but the contours were slightly off after adding the contour smoothing feature.
+* Added rectangular meshes. More to come on this feature.
+
 Versions 0.0.32 and 0.0.33
 * Started work in integrating Travis-CI into GitHub for testing PyNite code.
 

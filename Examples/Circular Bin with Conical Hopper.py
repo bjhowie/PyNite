@@ -36,23 +36,25 @@ model.AddMesh(hopper_mesh)
 model.AddMesh(shell_mesh)
 
 # The two meshes have overlapping duplicate nodes that need to be merged
+import cProfile
+# cProfile.run('model.MergeDuplicateNodes()', sort='cumtime')
 model.MergeDuplicateNodes()
 
 # Add hydrostatic pressure to each element in the model
 for element in model.Quads.values():
-    Zavg = (element.iNode.Z + element.jNode.Z + element.mNode.Z + element.nNode.Z)/4
-    model.AddQuadSurfacePressure(element.Name, -62.4*(h_shell - Zavg), case='Hydrostatic')
+    Yavg = (element.iNode.Y + element.jNode.Y + element.mNode.Y + element.nNode.Y)/4
+    model.AddQuadSurfacePressure(element.Name, 62.4*(h_shell - Yavg), case='Hydrostatic')
 
-# Add 4 supports at the springline at quarter points
+# Add supports at the springline
 for node in model.Nodes.values():
-    if round(node.Z, 10) == 0 and (round(node.X, 10) == 0 or round(node.Y, 10) == 0):
+    if round(node.Y, 10) == 0:
         model.DefineSupport(node.Name, True, True, True, False, False, False)
 
 # Add a load combination
 model.AddLoadCombo('1.4F', {'Hydrostatic': 1.4})
 
 # Analyze the model
-model.Analyze()
+cProfile.run('model.Analyze()', sort='cumtime')
 
 # Render the model. Labels and loads will be turned off to speed up interaction.
-RenderModel(model, 0.1, render_loads=False, color_map='dz', combo_name='1.4F', labels=False)
+RenderModel(model, 0.1, render_loads=True, color_map='Sy', combo_name='1.4F', labels=False, screenshot=False)

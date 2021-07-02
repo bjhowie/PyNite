@@ -1,6 +1,8 @@
 from PyNite.Node3D import Node3D
 from PyNite.Quad3D import Quad3D
-from math import pi, sin, cos
+from PyNite.Plate3D import Plate3D
+from math import pi, sin, cos, ceil
+from bisect import bisect
 
 #%%
 class Mesh():
@@ -18,6 +20,215 @@ class Mesh():
         self.last_element = None            # The name of the last element in the mesh
         self.nodes = {}                     # A dictionary containing the nodes in the mesh
         self.elements = {}                  # A dictionary containing the elements in the mesh
+
+#%%
+class RectangleMesh(Mesh):
+
+    def __init__(self, t, E, nu, mesh_size, width, height, origin=[0, 0, 0], plane='XY', 
+                 x_control=[], y_control=[], start_node='N1', start_element='Q1',
+                 element_type='Quad'):
+        """
+        A rectangular mesh of elements.
+
+        Parameters
+        ----------
+        t : number
+            Element thickness.
+        E : number
+            Element modulus of elasticity.
+        nu : number
+            Element poisson's ratio.
+        mesh_size : number
+            Desired mesh size.
+        width : number
+            The overall width of the mesh measured along its local x-axis.
+        height : number
+            The overall height of the mesh measured along its local y-axis.
+        origin : list, optional
+            The origin of the rectangular mesh's local coordinate system. The default is [0, 0, 0].
+        plane : string, optional
+            The plane the mesh will be parallel to. Options are 'XY', 'YZ', and 'XZ'. The default
+            is 'XY'.
+        x_control : list, optional
+            A list of control points along the mesh's local x-axis work into the mesh.
+        y_control : list, optional
+            A list of control points along the mesh's local y-axis work into the mesh.
+        start_node : string, optional
+            A unique name for the first node in the mesh. The default is 'N1'.
+        start_element : string, optional
+            A unique name for the first element in the mesh. The default is 'Q1' or 'R1' depending
+            on the type of element selected.
+        element_type : string, optional
+            The type of element to make the mesh out of. Either 'Quad' or 'Rect'. The default is
+            'Quad'.
+
+        Returns
+        -------
+        A new rectangular mesh object.
+
+        """
+        
+        super().__init__(t, E, nu, start_node, start_element)
+        self.mesh_size = mesh_size
+        self.width = width
+        self.height = height
+        self.origin = origin
+        self.plane = plane
+        self.x_control = x_control
+        self.y_control = y_control
+        self.element_type = element_type
+        self.__mesh()
+    
+    def __mesh(self):
+
+        mesh_size = self.mesh_size
+        width = self.width
+        height = self.height
+        Xo = self.origin[0]
+        Yo = self.origin[1]
+        Zo = self.origin[2]
+        plane = self.plane
+        x_control = self.x_control
+        y_control = self.y_control
+        element_type = self.element_type
+
+        # Add the mesh's boundaries to the list of control points
+        x_control.append(0)
+        x_control.append(width)
+        y_control.append(0)
+        y_control.append(height)
+
+        # Sort the control points and remove duplicate values
+        x_control = sorted(set(x_control))
+        y_control = sorted(set(y_control))
+        
+        # Each node number will be increased by the offset calculated below
+        node_offset = int(self.start_node[1:]) - 1
+
+        # Each element number will be increased by the offset calculated below
+        element_offset = int(self.start_element[1:]) - 1
+
+        # Determine which prefix to assign to new elements
+        if element_type == 'Quad':
+            element_prefix = 'Q'
+        else:
+            element_prefix = 'R'
+
+        # Initialize node numbering
+        node_num = 1
+
+        # Step through each y control point (except the first one which is always zero)
+        num_rows = 0
+        num_cols = 0
+        y = 0
+        for j in range(1, len(y_control), 1):
+            
+            # If this is not the first iteration 'y' will be too high at this point.
+            if j != 1:
+                y -= h
+
+            # Determine the mesh size between this y control point and the previous one
+            ny = max(1, (y_control[j] - y_control[j - 1])/mesh_size)
+            h = (y_control[j] - y_control[j - 1])/ceil(ny)
+
+            # Adjust 'y' if this is not the first iteration.
+            if j != 1:
+                y += h
+
+            # Generate nodes between the y control points
+            while round(y, 10) <= round(y_control[j], 10):
+                
+                # Count the number of rows of plates as we go
+                num_rows += 1
+
+                # Step through each x control point (except the first one which is always zero)
+                x = 0
+                for i in range(1, len(x_control), 1):
+                    
+                    # 'x' needs to be adjusted for the same reasons 'y' needed to be adjusted
+                    if i != 1:
+                        x -= b
+
+                    # Determine the mesh size between this x control point and the previous one
+                    nx = max(1, (x_control[i] - x_control[i - 1])/mesh_size)
+                    b = (x_control[i] - x_control[i - 1])/ceil(nx)
+
+                    if i != 1:
+                        x += b
+
+                    # Generate nodes between the x control points
+                    while round(x, 10) <= round(x_control[i], 10):
+                        
+                        # Count the number of columns of plates as we go
+                        if y == 0:
+                            num_cols += 1
+
+                        # Assign the node a name
+                        node_name = 'N' + str(node_num + node_offset)
+
+                        # Calculate the node's coordinates
+                        if plane == 'XY':
+                            X = Xo + x
+                            Y = Yo + y
+                            Z = Zo + 0
+                        elif plane == 'YZ':
+                            X = Xo + 0
+                            Y = Yo + y
+                            Z = Zo + x
+                        else:
+                            X = Xo + x
+                            Y = Yo + 0
+                            Z = Zo + y
+
+                        # Add the node to the mesh
+                        self.nodes[node_name] = Node3D(node_name, X, Y, Z)
+
+                        # Move to the next x coordinate
+                        x += b
+
+                        # Move to the next node number
+                        node_num += 1
+
+                # Move to the next y coordinate
+                y += h
+        
+        # At this point `num_cols` and `num_rows` represent the number of columns and rows of
+        # nodes. We'll adjust these variables to be the number of columns and rows of elements
+        # instead.
+        num_cols -= 1
+        num_rows -= 1
+        
+        # Create the elements
+        r = 1
+        n = 1
+        for i in range(1, num_cols*num_rows + 1, 1):
+
+            # Assign the element a name
+            element_name = element_prefix + str(i + element_offset)
+
+            # Find the attached nodes
+            i_node = n + (r - 1)
+            j_node = i_node + 1
+            m_node = j_node + (num_cols + 1)
+            n_node = m_node - 1
+
+            if i % num_cols == 0:
+                r += 1
+            
+            n += 1
+            
+            if element_type == 'Quad':
+                self.elements[element_name] = Quad3D(element_name, self.nodes['N' + str(i_node + node_offset)],
+                                                                   self.nodes['N' + str(j_node + node_offset)],
+                                                                   self.nodes['N' + str(m_node + node_offset)],
+                                                                   self.nodes['N' + str(n_node + node_offset)],
+                                                                   self.t, self.E, self.nu)
+            else:
+                self.elements[element_name] = Plate3D(element_name, self.nodes['N' + str(i_node + node_offset)],
+                                                                    self.nodes['N' + str(j_node + node_offset)],
+                                                                    self.nodes['N' + str(m_node + node_offset)],
+                                                                    self.nodes['N' + str(n_node + node_offset)],
+                                                                    self.t, self.E, self.nu)
 
 #%%           
 class AnnulusMesh(Mesh):

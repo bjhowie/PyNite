@@ -314,12 +314,23 @@ class FEModel3D():
 
 #%%
     def AddMesh(self, mesh):
+        """
+        Adds a predefined mesh to the model.
+
+        Parameters
+        ----------
+        mesh : Mesh
+            A mesh object.
+        """
 
         # Add the mesh's nodes to the finite element model
         self.Nodes.update(mesh.nodes)
 
         # Add the mesh's elements to the finite element model
-        self.Quads.update(mesh.elements)
+        if list(mesh.elements.values())[0].type == 'Quad':
+            self.Quads.update(mesh.elements)
+        elif list(mesh.elements.values())[0].type == 'Rect':
+            self.Plates.update(mesh.elements)
 
         # If the mesh contained duplicate keys that were already in the `Nodes` dictionary, the old
         # nodes will have been abandoned in favor of the new nodes. Reattach any elements that are
@@ -1344,17 +1355,17 @@ class FEModel3D():
                     if load[2] == case:
 
                         if load[0] == 'FX':
-                            P.itemset((ID*6 + 0, 0), P[ID*6 + 0, 0] + factor*load[1])
+                            P[ID*6 + 0, 0] += factor*load[1]
                         elif load[0] == 'FY':
-                            P.itemset((ID*6 + 1, 0), P[ID*6 + 1, 0] + factor*load[1])
+                            P[ID*6 + 1, 0] += factor*load[1]
                         elif load[0] == 'FZ':
-                            P.itemset((ID*6 + 2, 0), P[ID*6 + 2, 0] + factor*load[1])
+                            P[ID*6 + 2, 0] += factor*load[1]
                         elif load[0] == 'MX':
-                            P.itemset((ID*6 + 3, 0), P[ID*6 + 3, 0] + factor*load[1])
+                            P[ID*6 + 3, 0] += factor*load[1]
                         elif load[0] == 'MY':
-                            P.itemset((ID*6 + 4, 0), P[ID*6 + 4, 0] + factor*load[1])
+                            P[ID*6 + 4, 0] += factor*load[1]
                         elif load[0] == 'MZ':
-                            P.itemset((ID*6 + 5, 0), P[ID*6 + 5, 0] + factor*load[1])
+                            P[ID*6 + 5, 0] += factor*load[1]
         
         # Return the global nodal force vector
         return P
