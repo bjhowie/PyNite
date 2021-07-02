@@ -1396,7 +1396,7 @@ class FEModel3D():
             return m11, m12, m21, m22
 
 #%%  
-    def Analyze(self, check_statics=False, max_iter=30, sparse=True):
+    def Analyze(self, check_statics=False, max_iter=30, sparse=True, callback=None):
         '''
         Performs first-order static analysis.
         
@@ -1447,7 +1447,7 @@ class FEModel3D():
         D2 = atleast_2d(D2).T
 
         # Step through each load combination
-        for combo in self.LoadCombos.values():
+        for combo_index, combo in enumerate(self.LoadCombos.values()):
 
             print('')
             print('...Analyzing load combination ' + combo.name)
@@ -1587,6 +1587,8 @@ class FEModel3D():
 
                 # Keep track of the number of tension/compression only iterations
                 iter_count += 1
+                
+            if callback: callback((combo_index+1)/len(self.LoadCombos))
 
         # Calculate reactions
         self.__CalcReactions()

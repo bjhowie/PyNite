@@ -1622,5 +1622,6 @@ def PrepContour(model, stress_type='Mx', combo_name='Combo 1'):
 
     # Average the values at each node to obtain a smoothed contour
     for node in model.Nodes.values():
-      node.contour = sum(node.contour)/len(node.contour)
+        if len(node.contour)>0:
+            node.contour = sum(node.contour)/len(node.contour)
 
