@@ -57,6 +57,7 @@ class Quad3D():
         self.model = model
 
         # Get material properties for the plate from the model
+        self.material_name = material_name
         try:
             self.E = self.model.materials[material_name].E
             self.nu = self.model.materials[material_name].nu
