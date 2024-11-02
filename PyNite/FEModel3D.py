@@ -727,9 +727,9 @@ class FEModel3D():
     def merge_duplicate_nodes(self, tolerance=0.001):
         """Removes duplicate nodes from the model and returns a list of the removed node names.
 
-        :param tolerance: The maximum distance between two nodes in order to consider them
-                          duplicates. Defaults to 0.001.
+        :param tolerance: The maximum distance between two nodes in order to consider them duplicates. Defaults to 0.001.
         :type tolerance: float, optional
+        :return: A list of the names of the nodes that were removed from the model.
         """
 
         # Initialize a dictionary marking where each node is used
@@ -827,6 +827,9 @@ class FEModel3D():
         
         # Flag the model as unsolved
         self.solution = None
+
+        # Return the list of removed nodes
+        return remove_list
 
     def delete_node(self, node_name):
         """Removes a node from the model. All nodal loads associated with the node and elements attached to the node will also be removed.
@@ -1914,7 +1917,7 @@ class FEModel3D():
         # Return the global displacement vector
         return self._D[combo_name]
 
-    def analyze(self, log=False, check_stability=True, check_statics=False, max_iter=30, sparse=True, combo_tags=None):
+    def analyze(self, log=False, check_stability=True, check_statics=False, max_iter=30, sparse=True, combo_tags=None, spring_tolerance=0, member_tolerance=0):
         """Performs first-order static analysis. Iterations are performed if tension-only members or compression-only members are present.
 
         :param log: Prints the analysis log to the console if set to True. Default is False.
@@ -2006,9 +2009,10 @@ class FEModel3D():
                 Analysis._store_displacements(self, D1, D2, D1_indices, D2_indices, combo)
                 
                 # Check for tension/compression-only convergence
-                convergence = Analysis._check_TC_convergence(self, combo.name, log=log)
+                convergence = Analysis._check_TC_convergence(self, combo.name, log=log, spring_tolerance=spring_tolerance, member_tolerance=member_tolerance)
 
                 if convergence == False:
+
                     if log: print('- Tension/compression-only analysis did not converge. Adjusting stiffness matrix and reanalyzing.')
                 else:
                     if log: print('- Tension/compression-only analysis converged after ' + str(iter_count) + ' iteration(s)')
@@ -2027,7 +2031,7 @@ class FEModel3D():
         # Check statics if requested
         if check_statics == True:
             Analysis._check_statics(self, combo_tags)
-        
+
         # Flag the model as solved
         self.solution = 'Linear TC'
 
