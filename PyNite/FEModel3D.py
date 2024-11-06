@@ -14,6 +14,7 @@ from PyNite.Spring3D import Spring3D
 from PyNite.Member3D import Member3D
 from PyNite.Quad3D import Quad3D
 from PyNite.Plate3D import Plate3D
+from PyNite.MITC4 import MITC4
 from PyNite.LoadCombo import LoadCombo
 from PyNite.Mesh import Mesh, RectangleMesh, AnnulusMesh, FrustrumMesh, CylinderMesh
 from PyNite import Analysis
@@ -383,8 +384,8 @@ class FEModel3D():
         
         # Create a new plate
         new_plate = Plate3D(name, self.nodes[i_node], self.nodes[j_node], self.nodes[m_node],
-                           self.nodes[n_node], t, material_name, self, kx_mod, ky_mod)
-        
+                        self.nodes[n_node], t, material_name, self, kx_mod, ky_mod)
+            
         # Add the new plate to the list
         self.plates[name] = new_plate
 
@@ -394,7 +395,7 @@ class FEModel3D():
         # Return the plate name
         return name
 
-    def add_quad(self, name, i_node, j_node, m_node, n_node, t, material_name, kx_mod=1.0, ky_mod=1.0):
+    def add_quad(self, name, i_node, j_node, m_node, n_node, t, material_name, kx_mod=1.0, ky_mod=1.0, DKMQ=True):
         """Adds a new quadrilateral to the model. The quad formulation for in-plane (membrane)
         stiffness is based on an isoparametric formulation. For bending, it is based on an MITC4
         formulation. This element handles distortion relatively well, and is appropriate for thick
@@ -441,8 +442,12 @@ class FEModel3D():
                 count += 1
         
         # Create a new member
-        new_quad = Quad3D(name, self.nodes[i_node], self.nodes[j_node], self.nodes[m_node],
-                         self.nodes[n_node], t, material_name, self, kx_mod, ky_mod)
+        if DKMQ:
+            new_quad = Quad3D(name, self.nodes[i_node], self.nodes[j_node], self.nodes[m_node],
+                            self.nodes[n_node], t, material_name, self, kx_mod, ky_mod)
+        else:
+            new_quad = MITC4(name, self.nodes[i_node], self.nodes[j_node], self.nodes[m_node],
+                            self.nodes[n_node], t, material_name, self, kx_mod, ky_mod)
         
         # Add the new member to the list
         self.quads[name] = new_quad

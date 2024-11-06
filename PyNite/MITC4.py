@@ -10,6 +10,16 @@ from numpy import array, arccos, dot, cross, matmul, add, zeros
 from numpy.linalg import inv, det, norm
 from math import sin, cos
 
+def project_vector_onto_plane(v, plane_normal):
+    # Calculate the projection of v onto the normal vector
+    unit_plane_norm = plane_normal / norm(plane_normal)
+    projection_length = dot(v, unit_plane_norm)
+    
+    # Calculate the projected vector
+    projected_vector = v - projection_length * unit_plane_norm
+    
+    return projected_vector
+
 class MITC4():
     """
     An isoparametric general quadrilateral element, formulated by superimposing an isoparametric
@@ -31,6 +41,7 @@ class MITC4():
         self.name = name
         self.ID = None
         self.type = 'MITC4'
+        self.local_x_axis = None #(X,Y,Z) tuple of the plate's local x axis in global coordinates
 
         self.i_node = i_node
         self.j_node = j_node
@@ -73,14 +84,20 @@ class MITC4():
         vector_31 = array([X1 - X3, Y1 - Y3, Z1 - Z3]).T
         vector_34 = array([X4 - X3, Y4 - Y3, Z4 - Z3]).T
 
-        # Define the plate's local x, y, and z axes
-        x_axis = vector_34
-        z_axis = cross(x_axis, vector_32)
+        #Define the plate's local x, y, and z axes
+        z_axis = cross(vector_34, vector_32) #axis normal to plane of quad
+        if self.local_x_axis is None:
+            x_axis = vector_34
+        else:
+            x_axis = project_vector_onto_plane(array(self.local_x_axis).T, z_axis)
+            if not any(x_axis): x_axis = vector_34
+            
         y_axis = cross(z_axis, x_axis)
-
-        # Convert the x and y axes into unit vectors
+        
+        # Convert the x, y & z axes into unit vectors
         x_axis = x_axis/norm(x_axis)
         y_axis = y_axis/norm(y_axis)
+        z_axis = z_axis/norm(z_axis)
 
         # Calculate the local (x, y) coordinates for each node
         self.x1 = dot(vector_31, x_axis)
@@ -91,6 +108,12 @@ class MITC4():
         self.y2 = dot(vector_32, y_axis)
         self.y3 = 0
         self.y4 = dot(vector_34, y_axis)
+        
+        # Store the local axis vectors for use when creating the T matrix
+        self._local_x_vector = x_axis
+        self._local_y_vector = y_axis
+        self._local_z_vector = z_axis
+
 
 #%%
     def J(self, r, s):
@@ -656,51 +679,12 @@ class MITC4():
         Returns the coordinate transformation matrix for the quad element.
         '''
 
-        xi = self.i_node.X
-        xj = self.j_node.X
-        yi = self.i_node.Y
-        yj = self.j_node.Y
-        zi = self.i_node.Z
-        zj = self.j_node.Z
-
-        # Calculate the direction cosines for the local x-axis.The local x-axis will run from
-        # the i-node to the j-node
-        x = [xj - xi, yj - yi, zj - zi]
-
-        # Divide the vector by its magnitude to produce a unit x-vector of
-        # direction cosines
-        mag = (x[0]**2 + x[1]**2 + x[2]**2)**0.5
-        x = [x[0]/mag, x[1]/mag, x[2]/mag]
+        if not hasattr(self, '_local_x_vector'): self._local_coords()
         
-        # The local y-axis will be in the plane of the plate. Find a vector in
-        # the plate's local xy plane.
-        xn = self.n_node.X
-        yn = self.n_node.Y
-        zn = self.n_node.Z
-        xy = [xn - xi, yn - yi, zn - zi]
-
-        # Find a vector perpendicular to the plate surface to get the
-        # orientation of the local z-axis.
-        z = cross(x, xy)
-        
-        # Divide the z-vector by its magnitude to produce a unit z-vector of
-        # direction cosines.
-        mag = (z[0]**2 + z[1]**2 + z[2]**2)**0.5
-        z = [z[0]/mag, z[1]/mag, z[2]/mag]
-
-        # Calculate the local y-axis as a vector perpendicular to the local z
-        # and x-axes.
-        y = cross(z, x)
-        
-        # Divide the y-vector by its magnitude to produce a unit vector of
-        # direction cosines.
-        mag = (y[0]**2 + y[1]**2 + y[2]**2)**0.5
-        y = [y[0]/mag, y[1]/mag, y[2]/mag]
-
         # Create the direction cosines matrix.
-        dirCos = array([x,
-                        y,
-                        z])
+        dirCos = array([self._local_x_vector,
+                            self._local_y_vector,
+                            self._local_z_vector])
         
         # Build the transformation matrix.
         T = zeros((24, 24))
