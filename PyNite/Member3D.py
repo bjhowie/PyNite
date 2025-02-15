@@ -1,5 +1,7 @@
 # %%
-from numpy import array, zeros, add, subtract, matmul, insert, cross, divide, linspace, vstack, hstack, allclose, where
+from numpy import array, zeros, add, subtract, matmul, insert, cross, divide
+from numpy import linspace, vstack, hstack, allclose, where, full, searchsorted
+from numpy import ndarray
 from numpy.linalg import inv, pinv
 from math import isclose
 from PyNite.BeamSegZ import BeamSegZ
@@ -871,7 +873,8 @@ class Member3D():
         Member3D.__plt.show()    
         
 
-    def shear_array(self, Direction, n_points: int, combo_name='Combo 1', x_array=None):
+    def shear_array(self, Direction: str, combo_name: str = 'Combo 1',
+                     n_points: int = 0, x_array: ndarray | None = None) -> tuple[ndarray, ndarray]:
         """
         Returns the array of the shear in the member for the given direction
         
@@ -881,20 +884,26 @@ class Member3D():
             The direction to plot the shear for. Must be one of the following:
                 'Fy' = Shear acting on the local y-axis.
                 'Fz' = Shear acting on the local z-axis.
-        n_points: int
-            The number of points in the array to generate over the full length of the member.
         combo_name : string
             The name of the load combination to get the results for (not the load combination itself).
+        n_points: int
+            The number of points in the array to generate over the full length of the member.        
         x_array : array = None
             A custom array of x values that may be provided by the user, otherwise an array is generated.
             Values must be provided in local member coordinates (between 0 and L) and be in ascending order
         """
-        
-        # Segment the member into segments with mathematically continuous loads if not already done
-        if self._solved_combo is None or combo_name != self._solved_combo.name:
-            self._segment_member(combo_name)
-            self._solved_combo = self.model.load_combos[combo_name]
+        if Direction not in ('Fy', 'Fz'):
+            raise ValueError(f"Direction must be either 'Fy' or 'Fz', not '{Direction}'")
 
+        # Determine if a P-Delta analysis has been run
+        if self.model.solution == 'P-Delta' or self.model.solution == 'Pushover':
+            # Include P-little-delta effects in the moment results
+            P_delta = True
+        else:
+            # Do not include P-little delta effects in the moment results
+            P_delta = False
+
+        #Create x-array if needed
         L = self.L()
         if x_array is None:
             x_array = linspace(0, L, n_points)
@@ -902,15 +911,110 @@ class Member3D():
             if any(x_array<0) or any(x_array>L):
                 raise ValueError(f"All x values must be in the range 0 to {L}")
 
-        # Check which axis is of interest
-        if Direction == 'Fz':
-            return self._extract_vector_results(self.SegmentsY, x_array, 'shear')
-                
-        elif Direction == 'Fy':
-            return self._extract_vector_results(self.SegmentsZ, x_array, 'shear')
+        #P-delta analysis is not vectorised yet, so do it element-wise
+        if P_delta:
+            # Segment the member if necessary
+            if self._solved_combo is None or combo_name != self._solved_combo.name:
+                self._segment_member(combo_name)
+                self._solved_combo = self.model.load_combos[combo_name]
+
+            y_arr = array([self.moment(Direction, x, combo_name) for x in x_array])
+            return array([x_array, y_arr])
         
-        else:
-            raise ValueError(f"Direction must be 'Fy' or 'Fz'. {Direction} was given.")
+        #Extract load combination from model
+        try:
+            combo = self.model.load_combos[combo_name]
+        except KeyError:
+            raise NameError(f"No load combination named '{combo_name}' exists in the model")
+
+        #Create function to convert load axes
+        def convert_load_axis(force, load_direction):
+            if load_direction == Direction:
+                return force
+            elif load_direction in ('FX', 'FY', 'FZ'):
+                global_forces = zeros(3)
+                if load_direction == 'FX': global_forces[0] = force
+                if load_direction == 'FY': global_forces[1] = force
+                if load_direction == 'FZ': global_forces[2] = force
+                local_forces = self.T()[:3, :][:, :3] @ global_forces
+                F = local_forces[1] if Direction == "Fy" else local_forces[2]
+                return F
+            else:
+                return 0
+                           
+        #Create base results array
+        f = self.f(combo_name) 
+        V1 = f[1,0] if Direction == "Fy" else f[2,0]
+        results = full(len(x_array), V1)
+
+        #Extract point load_results
+        for pt_load_Direction, P, x, case in self.PtLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x < 0 or x > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            F = convert_load_axis(P * f, pt_load_Direction)
+            if F == 0: continue
+
+            #Partition x values into arrays either side of point load
+            left_xvals = x_array[:searchsorted(x_array,x)]
+            right_xvals = x_array[len(left_xvals):]
+
+            #Create shear results and combine into results array
+            vals_left = zeros(len(left_xvals))
+            vals_right = full(len(right_xvals), F)
+
+            results += hstack((vals_left,vals_right))
+
+        #Extract distributed load_results
+        for udl_load_Direction, w1, w2, x1, x2, case in self.DistLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x2 < 0 or x1 > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            dir_factor = convert_load_axis(f, udl_load_Direction)
+            if dir_factor == 0: continue
+
+
+            x1 = max(x1, 0) #clip to member
+            x2 = min(x2, L) #clip to member
+            w1 = dir_factor * w1
+            w2 = dir_factor * w2
+
+            #Partition x values into arrays either side and internal to the distributed load
+            left_index = searchsorted(x_array,x1)
+            right_index = searchsorted(x_array,x2)
+            left_xvals = x_array[:left_index]
+            mid_xvals = x_array[left_index:right_index]
+            right_xvals = x_array[right_index:]
+
+            #Create shear results and combine into results array
+            vals_left = zeros(len(left_xvals))
+
+            w_at_x = w1 + (w2-w1) * (mid_xvals-x1) / (x2-x1)
+            vals_mid = 0.5*(w1 + w_at_x) * (mid_xvals-x1)
+
+            F = (x2-x1) * (w1+w2)/2
+            vals_right = full(len(right_xvals), F)
+
+            results += hstack((vals_left,vals_mid,vals_right))
+
+        return array([x_array, results])
+            
 
 #%%
     def moment(self, Direction, x, combo_name='Combo 1'):
@@ -1128,7 +1232,8 @@ class Member3D():
         Member3D.__plt.title('Member ' + self.name + '\n' + combo_name)
         Member3D.__plt.show()
     
-    def moment_array(self, Direction, n_points, combo_name='Combo 1', x_array = None):
+    def moment_array(self, Direction: str, combo_name: str = 'Combo 1',
+                     n_points: int = 0, x_array: ndarray | None = None) -> tuple[ndarray, ndarray]:
         """
         Returns the array of the moment in the member for the given direction
         
@@ -1146,10 +1251,8 @@ class Member3D():
             A custom array of x values that may be provided by the user, otherwise an array is generated.
             Values must be provided in local member coordinates (between 0 and L) and be in ascending order.
         """
-        # Segment the member if necessary
-        if self._solved_combo is None or combo_name != self._solved_combo.name:
-            self._segment_member(combo_name)
-            self._solved_combo = self.model.load_combos[combo_name]
+        if Direction not in ('My', 'Mz'):
+            raise ValueError(f"Direction must be either 'My' or 'Mz', not '{Direction}'")
 
         # Determine if a P-Delta analysis has been run
         if self.model.solution == 'P-Delta' or self.model.solution == 'Pushover':
@@ -1159,29 +1262,186 @@ class Member3D():
             # Do not include P-little delta effects in the moment results
             P_delta = False
 
+        #Create x-array if needed
         L = self.L()
-
         if x_array is None:
             x_array = linspace(0, L, n_points)
         else:
             if any(x_array<0) or any(x_array>L):
                 raise ValueError(f"All x values must be in the range 0 to {L}")
-                
+
+        #P-delta analysis is not vectorised yet, so do it element-wise
         if P_delta:
-            #P-delta analysis is not vectorised yet, do it element-wise
+            # Segment the member if necessary
+            if self._solved_combo is None or combo_name != self._solved_combo.name:
+                self._segment_member(combo_name)
+                self._solved_combo = self.model.load_combos[combo_name]
+
             y_arr = array([self.moment(Direction, x, combo_name) for x in x_array])
             return array([x_array, y_arr])
+        
+        #Extract load combination from model
+        try:
+            combo = self.model.load_combos[combo_name]
+        except KeyError:
+            raise NameError(f"No load combination named '{combo_name}' exists in the model")
 
-        else:
-            # Check which axis is of interest
-            if Direction == 'My':
-                return self._extract_vector_results(self.SegmentsY, x_array, 'moment', P_delta)
-                    
-            elif Direction == 'Mz':
-                return self._extract_vector_results(self.SegmentsZ, x_array, 'moment', P_delta)
+        #Create function to convert load axes
+        local_force_dir = "Fy" if Direction == "Mz" else "Fz"
+        def convert_load_axis(force, load_direction):
+            if load_direction == local_force_dir or load_direction == Direction:
+                return force
             
+            elif load_direction in ('FX', 'FY', 'FZ'):
+                global_forces = zeros(3)
+                if load_direction == 'FX': global_forces[0] = force
+                if load_direction == 'FY': global_forces[1] = force
+                if load_direction == 'FZ': global_forces[2] = force
+                local_forces = self.T()[:3, :][:, :3] @ global_forces
+                F = local_forces[1] if local_force_dir == "Fy" else local_forces[2]
+                return F
+            
+            elif load_direction in ('MX', 'MY', 'MZ'):
+                global_forces = zeros(3)
+                if load_direction == 'MX': global_forces[0] = force
+                if load_direction == 'MY': global_forces[1] = force
+                if load_direction == 'MZ': global_forces[2] = force
+                local_forces = self.T()[:3, :][:, :3] @ global_forces
+                F = local_forces[2] if Direction == "Mz" else local_forces[1]
+                return F
+
             else:
-                raise ValueError(f"Direction must be 'My' or 'Mz'. {Direction} was given.")
+                return 0
+                           
+        #Create base results array by interpolating moments between the two ends
+        f = self.f(combo_name) 
+        M1 = f[5, 0]  if Direction == "Mz" else -f[4, 0] 
+        M2 = -f[11, 0]  if Direction == "Mz" else f[10, 0] 
+        results = M1 + (M2-M1) * x_array/L
+
+        #Extract point load_results
+        for pt_load_Direction, P, x, case in self.PtLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x < 0 or x > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            F = convert_load_axis(P * f, pt_load_Direction)
+            if F == 0: continue
+
+            #Partition x values into arrays either side of point load
+            left_xvals = x_array[:searchsorted(x_array,x)]
+            right_xvals = x_array[len(left_xvals):]
+
+            #Create moment results and combine into results array
+            if pt_load_Direction[0] == "M":
+                R = F / L if Direction == "Mz" else -F / L
+                vals_left = -R * left_xvals
+                vals_right = R * (L-right_xvals)
+
+            else:
+                vals_left = F * (L-x) * left_xvals / L
+                vals_right = F * x * (L-right_xvals) / L
+
+            results += hstack((vals_left,vals_right))
+
+        #Extract distributed load_results
+        for udl_load_Direction, w1, w2, x1, x2, case in self.DistLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x2 < 0 or x1 > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            dir_factor = convert_load_axis(f, udl_load_Direction)
+            if dir_factor == 0: continue
+
+            x1 = max(x1, 0) #clip to member
+            x2 = min(x2, L) #clip to member
+            w1 = dir_factor * w1
+            w2 = dir_factor * w2
+
+            #Check for trivial case, where the load is applied to the full member
+            if x1 == 0 and abs(x2-L) < 1e-6:
+                #Generate the uniform load component
+                wmin = min(w1, w2)
+                Ms = wmin * x_array * (L-x_array) / 2
+
+                #If required, add in the triangular load component
+                if w1 < w2:
+                    dw = w2 - w1
+                    W = dw * (x2-x1) / 2
+                    Ms += W * x_array * (L**2-x_array**2)/(3*L**2)
+                elif w1 > w2:
+                    dw = w1 - w2
+                    W = dw * (x2-x1) / 2
+                    Ms += W * (L-x_array) * (L**2-(L-x_array)**2)/(3*L**2)
+
+                results += Ms
+                continue
+
+            #Partition x values into arrays either side and internal to the distributed load
+            left_index = searchsorted(x_array,x1)
+            right_index = searchsorted(x_array,x2)
+            left_xvals = x_array[:left_index]
+            mid_xvals = x_array[left_index:right_index]
+            right_xvals = x_array[right_index:]
+
+            #Create moment results and combine into results array
+            if w1 == w2:
+                w = w1
+                vals_left = -w*left_xvals*x1 + w*left_xvals*x2 + \
+                    w*left_xvals*x1**2/(2*L) - w*left_xvals*x2**2/(2*L)
+
+                vals_mid = -w*mid_xvals**2 + w*mid_xvals*x2 + w*mid_xvals**3/(2*L) - \
+                    w*mid_xvals*x2**2/(2*L) + mid_xvals**2*(L*w - w*mid_xvals)/(2*L) - \
+                    x1**2*(L*w - w*mid_xvals)/(2*L)
+
+                vals_right = -x1**2*(L*w - w*right_xvals)/(2*L) + \
+                    x2**2*(L*w - w*right_xvals)/(2*L)
+                
+            else:
+                #Equations are more complex if load varies over length of beam
+                vals_left = -x1**3*(-left_xvals*w1 + left_xvals*w2)/(3*L*x1 - 3*L*x2) - \
+                    x1**2*(L*left_xvals*w1 - L*left_xvals*w2 + left_xvals*w1*x2 - \
+                    left_xvals*w2*x1)/(2*L*x1 - 2*L*x2) - x1*(-left_xvals*w1*x2 + \
+                    left_xvals*w2*x1)/(x1 - x2) + x2**3*(-left_xvals*w1 + left_xvals*w2)/(3*L*x1 - \
+                    3*L*x2) + x2**2*(L*left_xvals*w1 - L*left_xvals*w2 + left_xvals*w1*x2 - \
+                    left_xvals*w2*x1)/(2*L*x1 - 2*L*x2) + x2*(-left_xvals*w1*x2 + left_xvals*w2*x1)/(x1 - x2)
+                
+                vals_mid = -mid_xvals**3*(-mid_xvals*w1 + mid_xvals*w2)/(3*L*x1 - 3*L*x2) + \
+                    mid_xvals**3*(L*w1 - L*w2 - mid_xvals*w1 + mid_xvals*w2)/(3*L*x1 - 3*L*x2) - \
+                    mid_xvals**2*(L*mid_xvals*w1 - L*mid_xvals*w2 + mid_xvals*w1*x2 - \
+                    mid_xvals*w2*x1)/(2*L*x1 - 2*L*x2) + mid_xvals**2*(-L*w1*x2 + L*w2*x1 + \
+                    mid_xvals*w1*x2 - mid_xvals*w2*x1)/(2*L*x1 - 2*L*x2) - \
+                    mid_xvals*(-mid_xvals*w1*x2 + mid_xvals*w2*x1)/(x1 - x2) - x1**3*(L*w1 -
+                    L*w2 - mid_xvals*w1 + mid_xvals*w2)/(3*L*x1 - 3*L*x2) - x1**2*(-L*w1*x2 + \
+                    L*w2*x1 + mid_xvals*w1*x2 - mid_xvals*w2*x1)/(2*L*x1 - 2*L*x2) + \
+                    x2**3*(-mid_xvals*w1 + mid_xvals*w2)/(3*L*x1 - 3*L*x2) + \
+                    x2**2*(L*mid_xvals*w1 - L*mid_xvals*w2 + mid_xvals*w1*x2 - \
+                    mid_xvals*w2*x1)/(2*L*x1 - 2*L*x2) + x2*(-mid_xvals*w1*x2 + \
+                    mid_xvals*w2*x1)/(x1 - x2)
+                
+                vals_right = -x1**3*(L*w1 - L*w2 - right_xvals*w1 + right_xvals*w2)/(3*L*x1 - \
+                    3*L*x2) - x1**2*(-L*w1*x2 + L*w2*x1 + right_xvals*w1*x2 - \
+                    right_xvals*w2*x1)/(2*L*x1 - 2*L*x2) + x2**3*(L*w1 - L*w2 - right_xvals*w1 + \
+                    right_xvals*w2)/(3*L*x1 - 3*L*x2) + x2**2*(-L*w1*x2 + L*w2*x1 + \
+                    right_xvals*w1*x2 - right_xvals*w2*x1)/(2*L*x1 - 2*L*x2)
+
+            results += hstack((vals_left,vals_mid,vals_right))
+
+        return array([x_array, results])
        
 #%%
     def torque(self, x, combo_name='Combo 1'):
@@ -1692,7 +1952,8 @@ class Member3D():
         Member3D.__plt.title('Member ' + self.name + '\n' + combo_name)
         Member3D.__plt.show()
 
-    def deflection_array(self, Direction, n_points, combo_name='Combo 1', x_array=None):
+    def deflection_array(self, Direction: str, combo_name: str = 'Combo 1',
+                     n_points: int = 0, x_array: ndarray | None = None) -> tuple[ndarray, ndarray]:
         """
         Returns the array of the deflection in the member for the given direction
         
@@ -1711,10 +1972,8 @@ class Member3D():
             A custom array of x values that may be provided by the user, otherwise an array is generated.
             Values must be provided in local member coordinates (between 0 and L) and be in ascending order.
         """
-        # Segment the member if necessary
-        if self._solved_combo is None or combo_name != self._solved_combo.name:
-            self._segment_member(combo_name)
-            self._solved_combo = self.model.load_combos[combo_name]
+        if Direction not in ('dx', 'dy', 'dz'):
+            raise ValueError(f"Direction must be either 'dx', 'dy' or 'dz', not '{Direction}'")
 
         # Determine if a P-Delta analysis has been run
         if self.model.solution == 'P-Delta' or self.model.solution == 'Pushover':
@@ -1724,32 +1983,250 @@ class Member3D():
             # Do not include P-little delta effects in the moment results
             P_delta = False
 
+        #Create x-array if needed
         L = self.L()
-
         if x_array is None:
             x_array = linspace(0, L, n_points)
         else:
             if any(x_array<0) or any(x_array>L):
                 raise ValueError(f"All x values must be in the range 0 to {L}")
-                
-        if P_delta:
-            #P-delta analysis is not vectorised yet, do it element-wise
+
+        #Axial deflections and P-delta analysis is not vectorised yet, so do it element-wise
+        if Direction == 'dx' or P_delta:
+            # Segment the member if necessary
+            if self._solved_combo is None or combo_name != self._solved_combo.name:
+                self._segment_member(combo_name)
+                self._solved_combo = self.model.load_combos[combo_name]
+
             y_arr = array([self.deflection(Direction, x, combo_name) for x in x_array])
             return array([x_array, y_arr])
+        
+        #Extract load combination from model
+        try:
+            combo = self.model.load_combos[combo_name]
+        except KeyError:
+            raise NameError(f"No load combination named '{combo_name}' exists in the model")
 
+        #Create function to convert load axes
+        if Direction == 'dy':
+            local_force_dir = "Fy"
+            local_mom_dir = 'Mz'
         else:
-            # Check which axis is of interest
-            if Direction == 'dz':
-                return self._extract_vector_results(self.SegmentsY, x_array, 'deflection', P_delta)
+            local_force_dir = "Fz"
+            local_mom_dir = 'My'
 
-            elif Direction == 'dy':
-                return self._extract_vector_results(self.SegmentsZ, x_array, 'deflection', P_delta)
-                                
-            elif Direction == 'dx':
-                return self._extract_vector_results(self.SegmentsZ, x_array, 'axial_deflection', P_delta)
+        def convert_load_axis(force, load_direction):
+            if load_direction == local_force_dir or load_direction == local_mom_dir:
+                return force
             
+            elif load_direction in ('FX', 'FY', 'FZ'):
+                global_forces = zeros(3)
+                if load_direction == 'FX': global_forces[0] = force
+                if load_direction == 'FY': global_forces[1] = force
+                if load_direction == 'FZ': global_forces[2] = force
+                local_forces = self.T()[:3, :][:, :3] @ global_forces
+                F = local_forces[1] if local_force_dir == "Fy" else local_forces[2]
+                return F
+            
+            elif load_direction in ('MX', 'MY', 'MZ'):
+                global_forces = zeros(3)
+                if load_direction == 'MX': global_forces[0] = force
+                if load_direction == 'MY': global_forces[1] = force
+                if load_direction == 'MZ': global_forces[2] = force
+                local_forces = self.T()[:3, :][:, :3] @ global_forces
+                F = local_forces[1] if local_mom_dir == "My" else local_forces[2]
+                return F
+
             else:
-                raise ValueError(f"Direction must be 'My' or 'Mz'. {Direction} was given.")
+                return 0
+                           
+        #Create base results array by interpolating deflections between the two ends
+        f = self.f(combo_name) 
+        d = self.d(combo_name)
+        if Direction == "dy":
+            M1 = f[5, 0]  
+            M2 = -f[11, 0]
+            d1 = d[1,0]
+            d2 = d[7,0]
+            EI = self.material.E * self.section.Iz
+        else:
+            M1 = -f[4, 0] 
+            M2 = f[10, 0] 
+            d1 = d[2,0]
+            d2 = d[8,0]
+            EI = self.material.E * self.section.Iy
+        
+        results = d1 + (d2-d1) * x_array/L
+
+        #Add in deflections due to fixed end moments
+        results += M1 * L * (L-x_array) * (1-(L-x_array)**2/L**2)/(6*EI)
+        results += M2 * L * x_array * (1-x_array**2/L**2)/(6*EI)
+
+        #Extract point load_results
+        for pt_load_Direction, P, x, case in self.PtLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x < 0 or x > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            F = convert_load_axis(P * f, pt_load_Direction)
+            if F == 0: continue
+
+            #Partition x values into arrays either side of point load
+            left_xvals = x_array[:searchsorted(x_array,x)]
+            right_xvals = x_array[len(left_xvals):]
+
+            #Create moment results and combine into results array
+            if pt_load_Direction[0] == "M":
+                sgn = 1 if Direction == 'dz' else -1
+                vals_left = sgn*F * ((6*x - 3*x**2/L - 2*L)*left_xvals - left_xvals**3/L)/(6*EI)
+                vals_right = sgn*F * (3*(x**2+right_xvals**2) - right_xvals**3/L - (2*L + 3* x**2/L)*right_xvals)/(6*EI)
+
+            else:
+                vals_left = F * (L-x) * left_xvals * (L**2 - (L-x)**2 - left_xvals**2) / (6*EI*L)
+                vals_right = F * x * (L-right_xvals) * (L**2 - x**2 - (L-right_xvals)**2) / (6*EI*L)
+
+            results += hstack((vals_left,vals_right))
+
+        #Extract distributed load_results
+        for udl_load_Direction, w1, w2, x1, x2, case in self.DistLoads:
+            #Check if load is part of the current load combination
+            try:
+                f = combo.factors[case]
+            except KeyError:
+                continue
+
+            #Check the load is on the member
+            if x2 < 0 or x1 > L:
+                continue
+
+            #Check the direction of the load is releveant to the desired result
+            dir_factor = convert_load_axis(f, udl_load_Direction)
+            if dir_factor == 0: continue
+
+            x1 = max(x1, 0) #clip to member
+            x2 = min(x2, L) #clip to member
+            w1 = dir_factor * w1
+            w2 = dir_factor * w2
+
+            #Check for trivial case, where the load is applied to the full member
+            if x1 == 0 and abs(x2-L) < 1e-6:
+                #Generate the uniform load component
+                wmin = min(w1, w2)
+                ds = wmin*x_array*(L**3-2*L*x_array**2+x_array**3)/(24*EI)
+
+                #If required, add in the triangular load component
+                if w1 < w2:
+                    dw = w2 - w1
+                    W = dw * (x2-x1) / 2
+                    ds += W * x_array * (3*x_array**4-10*L**2*x_array**2+7*L**4)/(180*EI*L**2)
+
+                elif w1 > w2:
+                    dw = w1 - w2
+                    W = dw * (x2-x1) / 2
+                    ds += W * (L-x_array) * (3*(L-x_array)**4-10*L**2*(L-x_array)**2+7*L**4)/(180*EI*L**2)
+
+                results += ds
+                continue
+
+            #Partition x values into arrays either side and internal to the distributed load
+            left_index = searchsorted(x_array,x1)
+            right_index = searchsorted(x_array,x2)
+            left_xvals = x_array[:left_index]
+            mid_xvals = x_array[left_index:right_index]
+            right_xvals = x_array[right_index:]
+
+            #Create moment results and combine into results array
+            if w1 == w2:
+                w = w1
+                vals_left = left_xvals**3*w*x1/(6*EI) - left_xvals**3*w*x2/(6*EI) + left_xvals*w*x1**3/(6*EI) - \
+                    left_xvals*w*x2**3/(6*EI) - left_xvals*w*x1**4/(24*EI*L) + left_xvals*w*x2**4/(24*EI*L) - \
+                    x1**2*(2*L**2*left_xvals*w + left_xvals**3*w)/(12*EI*L) + x2**2*(2*L**2*left_xvals*w + \
+                    left_xvals**3*w)/(12*EI*L)
+
+                vals_mid = mid_xvals**4*w/(3*EI) - mid_xvals**3*w*x2/(6*EI) - mid_xvals*w*x2**3/(6*EI) - \
+                    mid_xvals**5*w/(24*EI*L) + mid_xvals**4*(-L*w + mid_xvals*w)/(24*EI*L) - \
+                    mid_xvals**2*(2*L**2*mid_xvals*w + mid_xvals**3*w)/(12*EI*L) + mid_xvals**2*(2*L**2*mid_xvals*w - \
+                    3*L*mid_xvals**2*w + mid_xvals**3*w)/(12*EI*L) + mid_xvals*w*x2**4/(24*EI*L) - \
+                    x1**4*(-L*w + mid_xvals*w)/(24*EI*L) - x1**2*(2*L**2*mid_xvals*w - \
+                    3*L*mid_xvals**2*w + mid_xvals**3*w)/(12*EI*L) + x2**2*(2*L**2*mid_xvals*w + mid_xvals**3*w)/(12*EI*L)
+
+                vals_right = -x1**4*(-L*w + right_xvals*w)/(24*EI*L) - x1**2*(2*L**2*right_xvals*w - 3*L*right_xvals**2*w + \
+                    right_xvals**3*w)/(12*EI*L) + x2**4*(-L*w + right_xvals*w)/(24*EI*L) + x2**2*(2*L**2*right_xvals*w - \
+                    3*L*right_xvals**2*w + right_xvals**3*w)/(12*EI*L)
+                
+            else:
+                #Equations are extremely complex if load varies over length of beam
+                vals_left = -x1**5*(left_xvals*w1 - left_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) - \
+                    x1**4*(-3*L*left_xvals*w1 + 3*L*left_xvals*w2 - left_xvals*w1*x2 + \
+                    left_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) - x1**3*(2*L**2*left_xvals*w1 - \
+                    2*L**2*left_xvals*w2 + 3*L*left_xvals*w1*x2 - 3*L*left_xvals*w2*x1 + left_xvals**3*w1 - \
+                    left_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) - x1**2*(-2*L**2*left_xvals*w1*x2 + \
+                    2*L**2*left_xvals*w2*x1 - L*left_xvals**3*w1 + L*left_xvals**3*w2 - \
+                    left_xvals**3*w1*x2 + left_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) - \
+                    x1*(left_xvals**3*w1*x2 - left_xvals**3*w2*x1)/(6*EI*x1 - 6*EI*x2) + x2**5*(left_xvals*w1 - \
+                    left_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) + x2**4*(-3*L*left_xvals*w1 + 3*L*left_xvals*w2 - \
+                    left_xvals*w1*x2 + left_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) + x2**3*(2*L**2*left_xvals*w1 - \
+                    2*L**2*left_xvals*w2 + 3*L*left_xvals*w1*x2 - 3*L*left_xvals*w2*x1 + left_xvals**3*w1 - \
+                    left_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) + x2**2*(-2*L**2*left_xvals*w1*x2 + \
+                    2*L**2*left_xvals*w2*x1 - L*left_xvals**3*w1 + L*left_xvals**3*w2 - left_xvals**3*w1*x2 + \
+                    left_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) + x2*(left_xvals**3*w1*x2 - \
+                    left_xvals**3*w2*x1)/(6*EI*x1 - 6*EI*x2)
+                
+                vals_mid = -mid_xvals**5*(mid_xvals*w1 - mid_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) + \
+                    mid_xvals**5*(-L*w1 + L*w2 + mid_xvals*w1 - mid_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) - \
+                    mid_xvals**4*(-3*L*mid_xvals*w1 + 3*L*mid_xvals*w2 - mid_xvals*w1*x2 + \
+                    mid_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) + mid_xvals**4*(L*w1*x2 - L*w2*x1 - \
+                    mid_xvals*w1*x2 + mid_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) + mid_xvals**3*(2*L**2*mid_xvals*w1 - \
+                    2*L**2*mid_xvals*w2 - 3*L*mid_xvals**2*w1 + 3*L*mid_xvals**2*w2 + mid_xvals**3*w1 - \
+                    mid_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) - mid_xvals**3*(2*L**2*mid_xvals*w1 - \
+                    2*L**2*mid_xvals*w2 + 3*L*mid_xvals*w1*x2 - 3*L*mid_xvals*w2*x1 + mid_xvals**3*w1 - \
+                    mid_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) - mid_xvals**2*(-2*L**2*mid_xvals*w1*x2 + \
+                    2*L**2*mid_xvals*w2*x1 - L*mid_xvals**3*w1 + L*mid_xvals**3*w2 - mid_xvals**3*w1*x2 + \
+                    mid_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) + mid_xvals**2*(-2*L**2*mid_xvals*w1*x2 + \
+                    2*L**2*mid_xvals*w2*x1 + 3*L*mid_xvals**2*w1*x2 - 3*L*mid_xvals**2*w2*x1 - \
+                    mid_xvals**3*w1*x2 + mid_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) - \
+                    mid_xvals*(mid_xvals**3*w1*x2 - mid_xvals**3*w2*x1)/(6*EI*x1 - 6*EI*x2) - \
+                    x1**5*(-L*w1 + L*w2 + mid_xvals*w1 - mid_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) - \
+                    x1**4*(L*w1*x2 - L*w2*x1 - mid_xvals*w1*x2 + mid_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) - \
+                    x1**3*(2*L**2*mid_xvals*w1 - 2*L**2*mid_xvals*w2 - 3*L*mid_xvals**2*w1 + \
+                    3*L*mid_xvals**2*w2 + mid_xvals**3*w1 - mid_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) - \
+                    x1**2*(-2*L**2*mid_xvals*w1*x2 + 2*L**2*mid_xvals*w2*x1 + 3*L*mid_xvals**2*w1*x2 - \
+                    3*L*mid_xvals**2*w2*x1 - mid_xvals**3*w1*x2 + mid_xvals**3*w2*x1)/(12*EI*L*x1 - \
+                    12*EI*L*x2) + x2**5*(mid_xvals*w1 - mid_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) + \
+                    x2**4*(-3*L*mid_xvals*w1 + 3*L*mid_xvals*w2 - mid_xvals*w1*x2 + \
+                    mid_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) + x2**3*(2*L**2*mid_xvals*w1 - \
+                    2*L**2*mid_xvals*w2 + 3*L*mid_xvals*w1*x2 - 3*L*mid_xvals*w2*x1 + mid_xvals**3*w1 - \
+                    mid_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) + x2**2*(-2*L**2*mid_xvals*w1*x2 + \
+                    2*L**2*mid_xvals*w2*x1 - L*mid_xvals**3*w1 + L*mid_xvals**3*w2 - mid_xvals**3*w1*x2 + \
+                    mid_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) + x2*(mid_xvals**3*w1*x2 - \
+                    mid_xvals**3*w2*x1)/(6*EI*x1 - 6*EI*x2)
+                
+                vals_right = -x1**5*(-L*w1 + L*w2 + right_xvals*w1 - right_xvals*w2)/(30*EI*L*x1 - \
+                    30*EI*L*x2) - x1**4*(L*w1*x2 - L*w2*x1 - right_xvals*w1*x2 + \
+                    right_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) - x1**3*(2*L**2*right_xvals*w1 - \
+                    2*L**2*right_xvals*w2 - 3*L*right_xvals**2*w1 + 3*L*right_xvals**2*w2 + \
+                    right_xvals**3*w1 - right_xvals**3*w2)/(18*EI*L*x1 - 18*EI*L*x2) - \
+                    x1**2*(-2*L**2*right_xvals*w1*x2 + 2*L**2*right_xvals*w2*x1 + \
+                    3*L*right_xvals**2*w1*x2 - 3*L*right_xvals**2*w2*x1 - right_xvals**3*w1*x2 + \
+                    right_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2) + x2**5*(-L*w1 + L*w2 + \
+                    right_xvals*w1 - right_xvals*w2)/(30*EI*L*x1 - 30*EI*L*x2) + x2**4*(L*w1*x2 - \
+                    L*w2*x1 - right_xvals*w1*x2 + right_xvals*w2*x1)/(24*EI*L*x1 - 24*EI*L*x2) + \
+                    x2**3*(2*L**2*right_xvals*w1 - 2*L**2*right_xvals*w2 - 3*L*right_xvals**2*w1 + \
+                    3*L*right_xvals**2*w2 + right_xvals**3*w1 - right_xvals**3*w2)/(18*EI*L*x1 - \
+                    18*EI*L*x2) + x2**2*(-2*L**2*right_xvals*w1*x2 + 2*L**2*right_xvals*w2*x1 + \
+                    3*L*right_xvals**2*w1*x2 - 3*L*right_xvals**2*w2*x1 - right_xvals**3*w1*x2 + \
+                    right_xvals**3*w2*x1)/(12*EI*L*x1 - 12*EI*L*x2)
+
+            results += hstack((vals_left,vals_mid,vals_right))
+
+        return array([x_array, results])
 
     def rel_deflection(self, Direction, x, combo_name='Combo 1'):
         """
