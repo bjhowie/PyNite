@@ -6,7 +6,7 @@ Copyright (c) 2020 D. Craig Brinck, SE; tamalone1
 """
 
 import unittest
-from PyNite import FEModel3D
+from Pynite import FEModel3D
 from datetime import datetime
 
 import numpy as np
@@ -32,12 +32,11 @@ class Test_Vector_Results(unittest.TestCase):
         model.add_node('N1', 0, 0, 0)
         model.add_node('N2', 7, 0, 0)
         model.add_node('N3', 12, 0, 0)
-        model.add_auxnode('AN1', 3.5, 0, 1)
 
         model.add_material("steel", 200e9, 80e9, 0.2, 24000)
         model.add_section("sec", 1e-3, 1e-6, 1e-6, 1e-6)
-        model.add_member("M1", "N1", "N2", "steel", "sec", aux_node="AN1")
-        model.add_member("M2", "N2", "N3", "steel", "sec", aux_node="AN1")
+        model.add_member("M1", "N1", "N2", "steel", "sec", rotation=33)
+        model.add_member("M2", "N2", "N3", "steel", "sec", rotation=-23)
 
         model.def_support('N1', True, True, True, True, True, True)
         model.def_support('N2', True, True, True)
@@ -137,14 +136,10 @@ class Test_Vector_Results(unittest.TestCase):
 
         xvals, def_array = mem.deflection_array('dy', 'Combo 1', 50)
         ref_deflections = np.array([mem.deflection("dy", x) for x in xvals])
-        # print(def_array)
-        # print(ref_deflections)
         self.assertTrue(np.all(np.isclose(def_array, ref_deflections)))
 
         xvals, def_array = mem.deflection_array('dz', 'Combo 1', 50)
         ref_deflections = np.array([mem.deflection("dz", x) for x in xvals])
-        # print(def_array)
-        # print(ref_deflections)
         self.assertTrue(np.all(np.isclose(def_array, ref_deflections)))
 
     def test_performance(self):
